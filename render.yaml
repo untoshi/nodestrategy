@@ -1,15 +1,17 @@
 services:
-  - type: worker
+  - type: pserv
     name: nodestrategy-bot
     runtime: python
     plan: starter
     region: oregon
     buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
+    repo: https://github.com/untoshi/nodestrategy
+    branch: main
     envVars:
       - key: DISCORD_TOKEN
         sync: false
-      - key: DISCORD_APPLICATION_ID
+      - key: DISCORD_APPLICATION_ID  
         sync: false
       - key: DISCORD_PUBLIC_KEY
         sync: false
