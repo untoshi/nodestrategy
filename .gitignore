@@ -1,5 +1,17 @@
 .env
+.env.test
 __pycache__/
 *.pyc
 .DS_Store
 venv/
+
+# Test files
+test_bot_data.py
+test_bot.sh
+test_onchain.py
+
+# Documentation and screenshots
+nodestrategy-context.html
+1.png
+2.png
+*.png
