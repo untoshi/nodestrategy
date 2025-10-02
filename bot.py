@@ -16,38 +16,110 @@ bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 API_BASE_URL = os.getenv('API_BASE_URL', 'https://node.auction/api')
 UPDATE_INTERVAL = int(os.getenv('UPDATE_INTERVAL', 60))
 
+# Auction parameters
+AUCTION_ADDRESS = 'bc1pnskr7fwv3kggav9hercy0f2x7zqyndcmjuuvkadyjpm7laxdfh9q09md6k'
+TARGET_BTC = 41.58
+BLOCKS_PER_DROP = 3
+
 # State tracking
 last_status = {}
 tracking_channel = None
-api_was_down = False
+last_price = None
 
 # Color scheme: Orange & Black
 ORANGE = 0xFF6B00
 
 
-def create_status_embed(data):
+async def fetch_onchain_data():
+    """Fetch on-chain data from mempool.space - 100% reliable"""
+    try:
+        async with aiohttp.ClientSession() as session:
+            # Fetch address data
+            async with session.get(
+                f'https://mempool.space/api/address/{AUCTION_ADDRESS}',
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                address_data = await resp.json()
+            
+            # Fetch current block height
+            async with session.get(
+                'https://mempool.space/api/blocks/tip/height',
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                block_height = int(await resp.text())
+            
+            # Fetch BTC price
+            async with session.get(
+                'https://mempool.space/api/v1/prices',
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                prices = await resp.json()
+                btc_price = prices['USD']
+            
+            # Calculate progress
+            btc_raised = address_data['chain_stats']['funded_txo_sum'] / 100_000_000
+            progress = btc_raised / TARGET_BTC
+            contribution_count = address_data['chain_stats']['tx_count']
+            
+            return {
+                'btc_raised': btc_raised,
+                'progress': progress,
+                'contribution_count': contribution_count,
+                'current_block': block_height,
+                'btc_price': btc_price,
+                'source': 'onchain'
+            }
+    except Exception as e:
+        print(f'[ERROR] On-chain data fetch failed: {e}')
+        return None
+
+
+async def fetch_token_price():
+    """Try to fetch token price from API - optional"""
+    global last_price
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f'{API_BASE_URL}/status',
+                timeout=aiohttp.ClientTimeout(total=5)
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    price = data.get('tokenUsdPrice')
+                    if price:
+                        last_price = price
+                    return price
+                return None
+    except Exception:
+        return None
+
+
+def create_status_embed(data, token_price=None):
     """Create clean minimal status embed"""
     
     # Calculate progress
-    progress = data['progress_confirmed'] * 100
+    progress = data['progress'] * 100
     progress_bar_length = 20
-    filled = int(progress_bar_length * data['progress_confirmed'])
+    filled = int(progress_bar_length * data['progress'])
     bar = '█' * filled + '░' * (progress_bar_length - filled)
     
-    # Calculate blocks until next price change
-    blocks_until_next = data['startHeight'] - data['currentHeight']
+    # Calculate blocks until next price drop
+    blocks_until_next = BLOCKS_PER_DROP - (data['current_block'] % BLOCKS_PER_DROP)
     time_estimate_mins = blocks_until_next * 10
-    time_estimate_hours = time_estimate_mins / 60
     
-    btc_raised = float(data['F_confirmed_BTC'])
-    btc_target = data['marketCapBtcSale']
-    current_price = data.get('tokenUsdPrice', 0)
+    btc_raised = data['btc_raised']
     
     # Clean simple embed
     embed = discord.Embed(
         title="NodeStrategy Auction",
         color=ORANGE,
-        timestamp=datetime.fromisoformat(data['serverTimeIso'].replace('Z', '+00:00'))
+        timestamp=datetime.utcnow()
     )
     
     embed.add_field(
@@ -58,39 +130,44 @@ def create_status_embed(data):
     
     embed.add_field(
         name="Raised",
-        value=f"```{btc_raised:.2f} / {btc_target:.2f} BTC```",
+        value=f"```{btc_raised:.2f} / {TARGET_BTC:.2f} BTC```",
         inline=False
     )
     
-    embed.add_field(
-        name="Token Price",
-        value=f"```${current_price:.6f}```",
-        inline=True
-    )
-    
-    if blocks_until_next > 0:
+    # Show token price if available
+    if token_price:
         embed.add_field(
-            name="Next Drop",
-            value=f"```~{time_estimate_hours:.1f}h```",
+            name="Token Price",
+            value=f"```${token_price:.6f}```",
+            inline=True
+        )
+    elif last_price:
+        embed.add_field(
+            name="Token Price",
+            value=f"```${last_price:.6f} (cached)```",
+            inline=True
+        )
+    else:
+        embed.add_field(
+            name="Token Price",
+            value="```Unavailable```",
             inline=True
         )
     
-    embed.set_footer(text="nodestrategy.app")
+    embed.add_field(
+        name="Next Drop",
+        value=f"```{blocks_until_next} blocks (~{time_estimate_mins}m)```",
+        inline=True
+    )
+    
+    # Add data source footer
+    footer_text = "On-chain data via mempool.space"
+    if data.get('contribution_count'):
+        footer_text = f"{data['contribution_count']} contributions • {footer_text}"
+    
+    embed.set_footer(text=footer_text)
     
     return embed
-
-
-async def fetch_status():
-    """Fetch auction status from API"""
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f'{API_BASE_URL}/status', timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status == 200:
-                    return await resp.json(), resp.status
-                return None, resp.status
-    except Exception as e:
-        print(f'[ERROR] API request failed: {e}')
-        return None, 0
 
 
 @bot.event
@@ -109,48 +186,28 @@ async def on_ready():
 
 @tasks.loop(seconds=UPDATE_INTERVAL)
 async def auction_tracker():
-    """Main tracking loop"""
-    global last_status, tracking_channel, api_was_down
+    """Main tracking loop - uses on-chain data"""
+    global last_status, tracking_channel
     
     if not tracking_channel:
         return
     
     try:
-        data, status_code = await fetch_status()
+        # Fetch on-chain data (reliable)
+        data = await fetch_onchain_data()
         
-        # Handle API failure - fail silently, don't spam users
         if not data:
-            if not api_was_down:
-                print(f'[ERROR] API is down (status: {status_code})')
-                api_was_down = True
-            else:
-                print(f'[ERROR] API still down (status: {status_code})')
+            print('[ERROR] Failed to fetch on-chain data')
             return
         
-        # API is back up - reset flag silently
-        if api_was_down:
-            print('[INFO] API is back online')
-            api_was_down = False
+        # Try to get token price (optional)
+        token_price = await fetch_token_price()
         
         # Check for alerts
         if last_status:
-            # Price drop alert
-            if data['T_now'] != last_status.get('T_now'):
-                print(f'[ALERT] Price drop detected: ${data.get("tokenUsdPrice", 0):.6f}')
-                alert_embed = discord.Embed(
-                    title="Price Drop",
-                    description=f"New price: ${data.get('tokenUsdPrice', 0):.6f}",
-                    color=ORANGE
-                )
-                try:
-                    await tracking_channel.send(embed=alert_embed)
-                    print(f'[ALERT] Price drop alert sent')
-                except Exception as e:
-                    print(f'[ERROR] Failed to send price drop alert: {e}')
-            
             # 5% increment milestone alerts
-            old_progress = last_status.get('progress_confirmed', 0) * 100
-            new_progress = data['progress_confirmed'] * 100
+            old_progress = last_status.get('progress', 0) * 100
+            new_progress = data['progress'] * 100
             
             print(f'[DEBUG] Checking milestones: {old_progress:.2f}% → {new_progress:.2f}%')
             
@@ -159,8 +216,8 @@ async def auction_tracker():
                 if old_progress < milestone <= new_progress:
                     print(f'[ALERT] Milestone {milestone}% reached!')
                     alert_embed = discord.Embed(
-                        title=f"{milestone}% Sold",
-                        description=f"{data['F_confirmed_BTC']} BTC raised",
+                        title=f"🎯 {milestone}% Sold",
+                        description=f"**{data['btc_raised']:.2f} BTC raised**\n{data['contribution_count']} contributions",
                         color=ORANGE
                     )
                     try:
@@ -168,9 +225,30 @@ async def auction_tracker():
                         print(f'[ALERT] Milestone {milestone}% alert sent successfully')
                     except Exception as e:
                         print(f'[ERROR] Failed to send milestone alert: {e}')
+            
+            # Price drop alert (if we have price data)
+            if token_price and last_status.get('token_price'):
+                # Alert if price dropped significantly (>1%)
+                price_change = ((token_price - last_status['token_price']) / last_status['token_price']) * 100
+                if price_change < -1:
+                    print(f'[ALERT] Price drop detected: ${token_price:.6f} ({price_change:.1f}%)')
+                    alert_embed = discord.Embed(
+                        title="💰 Price Update",
+                        description=f"New price: **${token_price:.6f}**\n({price_change:+.1f}%)",
+                        color=ORANGE
+                    )
+                    try:
+                        await tracking_channel.send(embed=alert_embed)
+                        print(f'[ALERT] Price drop alert sent')
+                    except Exception as e:
+                        print(f'[ERROR] Failed to send price drop alert: {e}')
         
-        last_status = data
-        print(f'[UPDATE] Progress: {data["progress_confirmed"]*100:.2f}% | Raised: {data["F_confirmed_BTC"]} BTC')
+        # Store current status
+        last_status = data.copy()
+        if token_price:
+            last_status['token_price'] = token_price
+        
+        print(f'[UPDATE] Progress: {data["progress"]*100:.2f}% | Raised: {data["btc_raised"]:.2f} BTC | Block: {data["current_block"]}')
         
     except Exception as e:
         print(f'[ERROR] Unexpected error in tracker: {e}')
@@ -178,18 +256,25 @@ async def auction_tracker():
 
 @bot.command(name='status', aliases=['s'])
 async def auction_status(ctx):
-    """Show current auction status"""
-    data, status_code = await fetch_status()
-    if data:
-        embed = create_status_embed(data)
-        await ctx.send(embed=embed)
-    else:
+    """Show current auction status - uses on-chain data"""
+    # Fetch on-chain data
+    data = await fetch_onchain_data()
+    
+    if not data:
         error_embed = discord.Embed(
-            title="⚠️ Unable to Fetch Auction Data",
-            description=f"The API is currently unavailable (status: {status_code}).\n\nPlease check the live auction at:\n🔗 https://node.auction/",
+            title="⚠️ Unable to Fetch Data",
+            description="Failed to fetch on-chain data. Please try again in a moment.\n\n🔗 https://node.auction/",
             color=0xFF0000
         )
         await ctx.send(embed=error_embed)
+        return
+    
+    # Try to get token price (optional)
+    token_price = await fetch_token_price()
+    
+    # Create and send embed
+    embed = create_status_embed(data, token_price)
+    await ctx.send(embed=embed)
 
 
 @bot.command(name='track')
@@ -232,19 +317,19 @@ async def help_command(ctx):
     """Show available commands"""
     embed = discord.Embed(
         title="NodeStrategy Bot Commands",
-        description="Track the NodeStrategy auction in real-time",
+        description="Track the NodeStrategy auction with real-time on-chain data",
         color=ORANGE
     )
     
     embed.add_field(
         name="!s or !status",
-        value="Show current auction status",
+        value="Show current auction status (on-chain data)",
         inline=False
     )
     
     embed.add_field(
         name="!track",
-        value="Enable auto-updates in this channel\nAlerts every 5% and on price drops",
+        value="Enable auto-updates in this channel\n• Alerts every 5% milestone\n• Price drop notifications",
         inline=False
     )
     
@@ -260,7 +345,7 @@ async def help_command(ctx):
         inline=False
     )
     
-    embed.set_footer(text="nodestrategy.app")
+    embed.set_footer(text="Data from Bitcoin blockchain via mempool.space")
     await ctx.send(embed=embed)
 
 
