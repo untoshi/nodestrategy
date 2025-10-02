@@ -1,0 +1,18 @@
+services:
+  - type: worker
+    name: nodestrategy-bot
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: DISCORD_APPLICATION_ID
+        sync: false
+      - key: DISCORD_PUBLIC_KEY
+        sync: false
+      - key: API_BASE_URL
+        value: https://node.auction/api
+      - key: UPDATE_INTERVAL
+        value: 60
