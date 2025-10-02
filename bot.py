@@ -98,13 +98,45 @@ def create_status_embed(data):
     
     # Calculate confirmed progress
     progress = data['progress'] * 100
-    progress_bar_length = 20
-    filled = int(progress_bar_length * data['progress'])
-    bar = '█' * filled + '░' * (progress_bar_length - filled)
-    
     btc_raised = data['btc_raised']
     btc_pending = data.get('btc_pending', 0)
     pending_contributions = data.get('pending_contributions', 0)
+    total_contributions = data.get('contribution_count', 0)
+    
+    # Check if auction is complete (100% or over)
+    is_complete = progress >= 100.0
+    
+    if is_complete:
+        # AUCTION CLOSED EMBED
+        total_raised = btc_raised + btc_pending
+        total_participants = total_contributions + pending_contributions
+        
+        embed = discord.Embed(
+            title="🎯 NodeStrategy Auction - CLOSED",
+            color=0x00FF00,  # Green for completed
+            timestamp=datetime.utcnow()
+        )
+        
+        embed.add_field(
+            name="Final Stats",
+            value=f"```✅ Target: {TARGET_BTC:.2f} BTC\n📊 Raised: {total_raised:.2f} BTC ({(total_raised/TARGET_BTC)*100:.1f}%)\n👥 Participants: {total_participants:,}```",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="For Official Updates",
+            value="🔗 [nodestrategy.app](https://nodestrategy.app)\n🐦 Follow [@nodestrategy](https://twitter.com/nodestrategy)",
+            inline=False
+        )
+        
+        embed.set_footer(text="Auction ended • On-chain data via mempool.space")
+        
+        return embed
+    
+    # ACTIVE AUCTION EMBED
+    progress_bar_length = 20
+    filled = int(progress_bar_length * data['progress'])
+    bar = '█' * filled + '░' * (progress_bar_length - filled)
     
     # Clean simple embed
     embed = discord.Embed(
