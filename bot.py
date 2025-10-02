@@ -24,7 +24,8 @@ BLOCKS_PER_DROP = 3
 # State tracking
 last_status = {}
 tracking_channel = None
-last_price = None
+cached_auction_data = None  # Cached data for instant responses
+last_fetch_time = None
 
 # Color scheme: Orange & Black
 ORANGE = 0xFF6B00
@@ -80,27 +81,7 @@ async def fetch_onchain_data():
         return None
 
 
-async def fetch_token_price():
-    """Try to fetch token price from API - optional"""
-    global last_price
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f'{API_BASE_URL}/status',
-                timeout=aiohttp.ClientTimeout(total=5)
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    price = data.get('tokenUsdPrice')
-                    if price:
-                        last_price = price
-                    return price
-                return None
-    except Exception:
-        return None
-
-
-def create_status_embed(data, token_price=None):
+def create_status_embed(data):
     """Create clean minimal status embed"""
     
     # Calculate progress
@@ -140,6 +121,25 @@ def create_status_embed(data, token_price=None):
     return embed
 
 
+@tasks.loop(seconds=30)
+async def data_fetcher():
+    """Background task to fetch and cache auction data every 30s"""
+    global cached_auction_data, last_fetch_time
+    
+    try:
+        # Fetch on-chain data
+        data = await fetch_onchain_data()
+        
+        if data:
+            cached_auction_data = data
+            last_fetch_time = datetime.utcnow()
+            print(f'[CACHE] Updated: {data["progress"]*100:.2f}% | {data["btc_raised"]:.2f} BTC')
+        else:
+            print('[CACHE] Failed to update data')
+    except Exception as e:
+        print(f'[CACHE] Error: {e}')
+
+
 @bot.event
 async def on_ready():
     # Set bot status
@@ -152,26 +152,27 @@ async def on_ready():
     print(f'[ONLINE] {bot.user.name} connected')
     print(f'[INFO] Bot ready - use !s or !status for auction info')
     print(f'[INFO] Use !track to enable auto-updates in a channel')
+    
+    # Start background data fetcher
+    if not data_fetcher.is_running():
+        data_fetcher.start()
+        print(f'[INFO] Background data fetcher started (30s interval)')
 
 
 @tasks.loop(seconds=UPDATE_INTERVAL)
 async def auction_tracker():
-    """Main tracking loop - uses on-chain data"""
+    """Main tracking loop - uses cached data"""
     global last_status, tracking_channel
     
     if not tracking_channel:
         return
     
+    if not cached_auction_data:
+        return
+    
     try:
-        # Fetch on-chain data (reliable)
-        data = await fetch_onchain_data()
-        
-        if not data:
-            print('[ERROR] Failed to fetch on-chain data')
-            return
-        
-        # Try to get token price (optional)
-        token_price = await fetch_token_price()
+        # Use cached data
+        data = cached_auction_data
         
         # Check for alerts
         if last_status:
@@ -195,28 +196,9 @@ async def auction_tracker():
                         print(f'[ALERT] Milestone {milestone}% alert sent successfully')
                     except Exception as e:
                         print(f'[ERROR] Failed to send milestone alert: {e}')
-            
-            # Price drop alert (if we have price data)
-            if token_price and last_status.get('token_price'):
-                # Alert if price dropped significantly (>1%)
-                price_change = ((token_price - last_status['token_price']) / last_status['token_price']) * 100
-                if price_change < -1:
-                    print(f'[ALERT] Price drop detected: ${token_price:.6f} ({price_change:.1f}%)')
-                    alert_embed = discord.Embed(
-                        title="💰 Price Update",
-                        description=f"New price: **${token_price:.6f}**\n({price_change:+.1f}%)",
-                        color=ORANGE
-                    )
-                    try:
-                        await tracking_channel.send(embed=alert_embed)
-                        print(f'[ALERT] Price drop alert sent')
-                    except Exception as e:
-                        print(f'[ERROR] Failed to send price drop alert: {e}')
         
         # Store current status
         last_status = data.copy()
-        if token_price:
-            last_status['token_price'] = token_price
         
         print(f'[UPDATE] Progress: {data["progress"]*100:.2f}% | Raised: {data["btc_raised"]:.2f} BTC | Block: {data["current_block"]}')
         
@@ -226,25 +208,26 @@ async def auction_tracker():
 
 @bot.command(name='status', aliases=['s'])
 async def auction_status(ctx):
-    """Show current auction status - uses on-chain data"""
-    # Fetch on-chain data
-    data = await fetch_onchain_data()
-    
-    if not data:
-        error_embed = discord.Embed(
-            title="⚠️ Unable to Fetch Data",
-            description="Failed to fetch on-chain data. Please try again in a moment.\n\n🔗 https://node.auction/",
-            color=0xFF0000
-        )
-        await ctx.send(embed=error_embed)
-        return
-    
-    # Try to get token price (optional)
-    token_price = await fetch_token_price()
-    
-    # Create and send embed
-    embed = create_status_embed(data, token_price)
-    await ctx.send(embed=embed)
+    """Show current auction status - instant response from cache"""
+    # Use cached data for instant response
+    if cached_auction_data:
+        embed = create_status_embed(cached_auction_data)
+        await ctx.send(embed=embed)
+    else:
+        # No cache yet, fetch data (first time only)
+        data = await fetch_onchain_data()
+        
+        if not data:
+            error_embed = discord.Embed(
+                title="⚠️ Unable to Fetch Data",
+                description="Bot is starting up. Please try again in a moment.\n\n🔗 https://node.auction/",
+                color=0xFF0000
+            )
+            await ctx.send(embed=error_embed)
+            return
+        
+        embed = create_status_embed(data)
+        await ctx.send(embed=embed)
 
 
 @bot.command(name='track')
@@ -287,19 +270,19 @@ async def help_command(ctx):
     """Show available commands"""
     embed = discord.Embed(
         title="NodeStrategy Bot Commands",
-        description="Track the NodeStrategy auction with real-time on-chain data",
+        description="Track the NodeStrategy auction with real-time on-chain data\nUpdates every 30 seconds for instant responses",
         color=ORANGE
     )
     
     embed.add_field(
         name="!s or !status",
-        value="Show current auction status (on-chain data)",
+        value="Show current auction status (instant)",
         inline=False
     )
     
     embed.add_field(
         name="!track",
-        value="Enable auto-updates in this channel\n• Alerts every 5% milestone\n• Price drop notifications",
+        value="Enable auto-updates in this channel\n• Alerts every 5% milestone",
         inline=False
     )
     
