@@ -19,6 +19,7 @@ UPDATE_INTERVAL = int(os.getenv('UPDATE_INTERVAL', 60))
 # State tracking
 last_status = {}
 tracking_channel = None
+api_was_down = False
 
 # Color scheme: Orange & Black
 ORANGE = 0xFF6B00
@@ -81,11 +82,15 @@ def create_status_embed(data):
 
 async def fetch_status():
     """Fetch auction status from API"""
-    async with aiohttp.ClientSession() as session:
-        async with session.get(f'{API_BASE_URL}/status') as resp:
-            if resp.status == 200:
-                return await resp.json()
-            return None
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f'{API_BASE_URL}/status', timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    return await resp.json(), resp.status
+                return None, resp.status
+    except Exception as e:
+        print(f'[ERROR] API request failed: {e}')
+        return None, 0
 
 
 @bot.event
@@ -105,16 +110,48 @@ async def on_ready():
 @tasks.loop(seconds=UPDATE_INTERVAL)
 async def auction_tracker():
     """Main tracking loop"""
-    global last_status, tracking_channel
+    global last_status, tracking_channel, api_was_down
     
     if not tracking_channel:
         return
     
     try:
-        data = await fetch_status()
+        data, status_code = await fetch_status()
+        
+        # Handle API failure
         if not data:
-            print('[ERROR] Failed to fetch status')
+            if not api_was_down:
+                # First time detecting API is down - notify users
+                print(f'[ERROR] API is down (status: {status_code})')
+                error_embed = discord.Embed(
+                    title="⚠️ API Temporarily Unavailable",
+                    description=f"The NodeStrategy auction API is currently down.\n\nCheck live updates at:\n🔗 https://node.auction/\n\nTracking will resume automatically when the API is back online.",
+                    color=0xFF0000
+                )
+                try:
+                    await tracking_channel.send(embed=error_embed)
+                    print('[ALERT] API down notification sent')
+                except Exception as e:
+                    print(f'[ERROR] Failed to send API down notification: {e}')
+                api_was_down = True
+            else:
+                print(f'[ERROR] API still down (status: {status_code})')
             return
+        
+        # API is back up - notify if it was previously down
+        if api_was_down:
+            print('[INFO] API is back online')
+            recovery_embed = discord.Embed(
+                title="✅ API Back Online",
+                description="The NodeStrategy auction API has recovered. Resuming live tracking...",
+                color=0x00FF00
+            )
+            try:
+                await tracking_channel.send(embed=recovery_embed)
+                print('[ALERT] API recovery notification sent')
+            except Exception as e:
+                print(f'[ERROR] Failed to send recovery notification: {e}')
+            api_was_down = False
         
         # Check for alerts
         if last_status:
@@ -126,8 +163,11 @@ async def auction_tracker():
                     description=f"New price: ${data.get('tokenUsdPrice', 0):.6f}",
                     color=ORANGE
                 )
-                await tracking_channel.send(embed=alert_embed)
-                print(f'[ALERT] Price drop alert sent')
+                try:
+                    await tracking_channel.send(embed=alert_embed)
+                    print(f'[ALERT] Price drop alert sent')
+                except Exception as e:
+                    print(f'[ERROR] Failed to send price drop alert: {e}')
             
             # 5% increment milestone alerts
             old_progress = last_status.get('progress_confirmed', 0) * 100
@@ -144,25 +184,33 @@ async def auction_tracker():
                         description=f"{data['F_confirmed_BTC']} BTC raised",
                         color=ORANGE
                     )
-                    await tracking_channel.send(embed=alert_embed)
-                    print(f'[ALERT] Milestone {milestone}% alert sent')
+                    try:
+                        await tracking_channel.send(embed=alert_embed)
+                        print(f'[ALERT] Milestone {milestone}% alert sent successfully')
+                    except Exception as e:
+                        print(f'[ERROR] Failed to send milestone alert: {e}')
         
         last_status = data
         print(f'[UPDATE] Progress: {data["progress_confirmed"]*100:.2f}% | Raised: {data["F_confirmed_BTC"]} BTC')
         
     except Exception as e:
-        print(f'[ERROR] {e}')
+        print(f'[ERROR] Unexpected error in tracker: {e}')
 
 
 @bot.command(name='status', aliases=['s'])
 async def auction_status(ctx):
     """Show current auction status"""
-    data = await fetch_status()
+    data, status_code = await fetch_status()
     if data:
         embed = create_status_embed(data)
         await ctx.send(embed=embed)
     else:
-        await ctx.send('Failed to fetch auction data')
+        error_embed = discord.Embed(
+            title="⚠️ Unable to Fetch Auction Data",
+            description=f"The API is currently unavailable (status: {status_code}).\n\nPlease check the live auction at:\n🔗 https://node.auction/",
+            color=0xFF0000
+        )
+        await ctx.send(embed=error_embed)
 
 
 @bot.command(name='track')
