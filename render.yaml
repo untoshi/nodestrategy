@@ -3,6 +3,7 @@ services:
     name: nodestrategy-bot
     runtime: python
     plan: starter
+    region: oregon
     buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
     envVars:
