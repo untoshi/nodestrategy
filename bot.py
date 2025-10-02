@@ -120,26 +120,32 @@ async def auction_tracker():
         if last_status:
             # Price drop alert
             if data['T_now'] != last_status.get('T_now'):
+                print(f'[ALERT] Price drop detected: ${data.get("tokenUsdPrice", 0):.6f}')
                 alert_embed = discord.Embed(
                     title="Price Drop",
                     description=f"New price: ${data.get('tokenUsdPrice', 0):.6f}",
                     color=ORANGE
                 )
                 await tracking_channel.send(embed=alert_embed)
+                print(f'[ALERT] Price drop alert sent')
             
             # 5% increment milestone alerts
             old_progress = last_status.get('progress_confirmed', 0) * 100
             new_progress = data['progress_confirmed'] * 100
             
+            print(f'[DEBUG] Checking milestones: {old_progress:.2f}% → {new_progress:.2f}%')
+            
             # Check every 5% milestone
             for milestone in range(5, 101, 5):
                 if old_progress < milestone <= new_progress:
+                    print(f'[ALERT] Milestone {milestone}% reached!')
                     alert_embed = discord.Embed(
                         title=f"{milestone}% Sold",
                         description=f"{data['F_confirmed_BTC']} BTC raised",
                         color=ORANGE
                     )
                     await tracking_channel.send(embed=alert_embed)
+                    print(f'[ALERT] Milestone {milestone}% alert sent')
         
         last_status = data
         print(f'[UPDATE] Progress: {data["progress_confirmed"]*100:.2f}% | Raised: {data["F_confirmed_BTC"]} BTC')
