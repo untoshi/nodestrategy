@@ -1,5 +1,5 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 import aiohttp
 import os
 from datetime import datetime
@@ -14,6 +14,11 @@ bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 
 # Config
 API_BASE_URL = os.getenv('API_BASE_URL', 'https://node.auction/api')
+UPDATE_INTERVAL = int(os.getenv('UPDATE_INTERVAL', 60))
+
+# State tracking
+last_status = {}
+tracking_channel = None
 
 # Color scheme: Orange & Black
 ORANGE = 0xFF6B00
@@ -85,8 +90,62 @@ async def fetch_status():
 
 @bot.event
 async def on_ready():
+    # Set bot status
+    await bot.change_presence(
+        activity=discord.Activity(
+            type=discord.ActivityType.watching,
+            name="NodeStrategy Auction | !help"
+        )
+    )
     print(f'[ONLINE] {bot.user.name} connected')
     print(f'[INFO] Bot ready - use !s or !status for auction info')
+    print(f'[INFO] Use !track to enable auto-updates in a channel')
+
+
+@tasks.loop(seconds=UPDATE_INTERVAL)
+async def auction_tracker():
+    """Main tracking loop"""
+    global last_status, tracking_channel
+    
+    if not tracking_channel:
+        return
+    
+    try:
+        data = await fetch_status()
+        if not data:
+            print('[ERROR] Failed to fetch status')
+            return
+        
+        # Check for alerts
+        if last_status:
+            # Price drop alert
+            if data['T_now'] != last_status.get('T_now'):
+                alert_embed = discord.Embed(
+                    title="Price Drop",
+                    description=f"New price: ${data.get('tokenUsdPrice', 0):.6f}",
+                    color=ORANGE
+                )
+                await tracking_channel.send(embed=alert_embed)
+            
+            # 5% increment milestone alerts
+            old_progress = last_status.get('progress_confirmed', 0) * 100
+            new_progress = data['progress_confirmed'] * 100
+            
+            # Check every 5% milestone
+            for milestone in range(5, 101, 5):
+                if old_progress < milestone <= new_progress:
+                    alert_embed = discord.Embed(
+                        title=f"{milestone}% Sold",
+                        description=f"{data['F_confirmed_BTC']} BTC raised",
+                        color=ORANGE
+                    )
+                    await tracking_channel.send(embed=alert_embed)
+        
+        last_status = data
+        print(f'[UPDATE] Progress: {data["progress_confirmed"]*100:.2f}% | Raised: {data["F_confirmed_BTC"]} BTC')
+        
+    except Exception as e:
+        print(f'[ERROR] {e}')
 
 
 @bot.command(name='status', aliases=['s'])
@@ -98,6 +157,78 @@ async def auction_status(ctx):
         await ctx.send(embed=embed)
     else:
         await ctx.send('Failed to fetch auction data')
+
+
+@bot.command(name='track')
+async def start_tracking(ctx):
+    """Enable auto-updates in this channel"""
+    global tracking_channel
+    
+    tracking_channel = ctx.channel
+    
+    if not auction_tracker.is_running():
+        auction_tracker.start()
+    
+    embed = discord.Embed(
+        title="Tracking Enabled",
+        description=f"Auto-updates will be posted in this channel.\nAlerts every 5% and on price drops.",
+        color=ORANGE
+    )
+    await ctx.send(embed=embed)
+    print(f'[INFO] Tracking enabled in #{ctx.channel.name}')
+
+
+@bot.command(name='stop')
+async def stop_tracking(ctx):
+    """Disable auto-updates"""
+    global tracking_channel
+    
+    tracking_channel = None
+    
+    embed = discord.Embed(
+        title="Tracking Disabled",
+        description="Auto-updates stopped. Use !track to re-enable.",
+        color=ORANGE
+    )
+    await ctx.send(embed=embed)
+    print(f'[INFO] Tracking disabled')
+
+
+@bot.command(name='help', aliases=['h', 'commands'])
+async def help_command(ctx):
+    """Show available commands"""
+    embed = discord.Embed(
+        title="NodeStrategy Bot Commands",
+        description="Track the NodeStrategy auction in real-time",
+        color=ORANGE
+    )
+    
+    embed.add_field(
+        name="!s or !status",
+        value="Show current auction status",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="!track",
+        value="Enable auto-updates in this channel\nAlerts every 5% and on price drops",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="!stop",
+        value="Disable auto-updates",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="!help",
+        value="Show this help message",
+        inline=False
+    )
+    
+    embed.set_footer(text="nodestrategy.app")
+    await ctx.send(embed=embed)
 
 
 if __name__ == '__main__':
