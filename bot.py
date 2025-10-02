@@ -108,22 +108,20 @@ async def auction_tracker():
             print('[ERROR] Failed to fetch status')
             return
         
-        # Find the status channel (first text channel with 'status' or 'auction' in name)
+        # Find the status channel (ONLY channels with 'status' or 'auction' in name)
         if not status_channel:
             for guild in bot.guilds:
                 for channel in guild.text_channels:
                     if 'status' in channel.name.lower() or 'auction' in channel.name.lower():
                         status_channel = channel
+                        print(f'[INFO] Found status channel: #{channel.name}')
                         break
                 if status_channel:
                     break
         
-        # If still no channel, use first available text channel
-        if not status_channel and bot.guilds:
-            status_channel = bot.guilds[0].text_channels[0]
-        
+        # Don't post if no proper channel found
         if not status_channel:
-            print('[ERROR] No channel found')
+            print('[INFO] No status/auction channel found. Create a channel with "status" or "auction" in the name.')
             return
         
         # Check for alerts
