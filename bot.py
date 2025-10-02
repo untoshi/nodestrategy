@@ -109,10 +109,6 @@ def create_status_embed(data, token_price=None):
     filled = int(progress_bar_length * data['progress'])
     bar = '█' * filled + '░' * (progress_bar_length - filled)
     
-    # Calculate blocks until next price drop
-    blocks_until_next = BLOCKS_PER_DROP - (data['current_block'] % BLOCKS_PER_DROP)
-    time_estimate_mins = blocks_until_next * 10
-    
     btc_raised = data['btc_raised']
     
     # Clean simple embed
@@ -132,32 +128,6 @@ def create_status_embed(data, token_price=None):
         name="Raised",
         value=f"```{btc_raised:.2f} / {TARGET_BTC:.2f} BTC```",
         inline=False
-    )
-    
-    # Show token price if available
-    if token_price:
-        embed.add_field(
-            name="Token Price",
-            value=f"```${token_price:.6f}```",
-            inline=True
-        )
-    elif last_price:
-        embed.add_field(
-            name="Token Price",
-            value=f"```${last_price:.6f} (cached)```",
-            inline=True
-        )
-    else:
-        embed.add_field(
-            name="Token Price",
-            value="```Unavailable```",
-            inline=True
-        )
-    
-    embed.add_field(
-        name="Next Drop",
-        value=f"```{blocks_until_next} blocks (~{time_estimate_mins}m)```",
-        inline=True
     )
     
     # Add data source footer
