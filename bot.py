@@ -118,39 +118,18 @@ async def auction_tracker():
     try:
         data, status_code = await fetch_status()
         
-        # Handle API failure
+        # Handle API failure - fail silently, don't spam users
         if not data:
             if not api_was_down:
-                # First time detecting API is down - notify users
                 print(f'[ERROR] API is down (status: {status_code})')
-                error_embed = discord.Embed(
-                    title="⚠️ API Temporarily Unavailable",
-                    description=f"The NodeStrategy auction API is currently down.\n\nCheck live updates at:\n🔗 https://node.auction/\n\nTracking will resume automatically when the API is back online.",
-                    color=0xFF0000
-                )
-                try:
-                    await tracking_channel.send(embed=error_embed)
-                    print('[ALERT] API down notification sent')
-                except Exception as e:
-                    print(f'[ERROR] Failed to send API down notification: {e}')
                 api_was_down = True
             else:
                 print(f'[ERROR] API still down (status: {status_code})')
             return
         
-        # API is back up - notify if it was previously down
+        # API is back up - reset flag silently
         if api_was_down:
             print('[INFO] API is back online')
-            recovery_embed = discord.Embed(
-                title="✅ API Back Online",
-                description="The NodeStrategy auction API has recovered. Resuming live tracking...",
-                color=0x00FF00
-            )
-            try:
-                await tracking_channel.send(embed=recovery_embed)
-                print('[ALERT] API recovery notification sent')
-            except Exception as e:
-                print(f'[ERROR] Failed to send recovery notification: {e}')
             api_was_down = False
         
         # Check for alerts
