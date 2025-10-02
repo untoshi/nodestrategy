@@ -63,15 +63,27 @@ async def fetch_onchain_data():
                 prices = await resp.json()
                 btc_price = prices['USD']
             
-            # Calculate progress
-            btc_raised = address_data['chain_stats']['funded_txo_sum'] / 100_000_000
-            progress = btc_raised / TARGET_BTC
-            contribution_count = address_data['chain_stats']['tx_count']
+            # Calculate confirmed progress
+            btc_raised_confirmed = address_data['chain_stats']['funded_txo_sum'] / 100_000_000
+            progress_confirmed = btc_raised_confirmed / TARGET_BTC
+            confirmed_contributions = address_data['chain_stats']['funded_txo_count']
+            
+            # Calculate pending (mempool) data
+            mempool_stats = address_data.get('mempool_stats', {})
+            btc_pending = mempool_stats.get('funded_txo_sum', 0) / 100_000_000
+            pending_contributions = mempool_stats.get('funded_txo_count', 0)
+            
+            # Calculate potential total if pending confirms
+            btc_total_if_confirmed = btc_raised_confirmed + btc_pending
+            progress_if_confirmed = btc_total_if_confirmed / TARGET_BTC
             
             return {
-                'btc_raised': btc_raised,
-                'progress': progress,
-                'contribution_count': contribution_count,
+                'btc_raised': btc_raised_confirmed,
+                'btc_pending': btc_pending,
+                'progress': progress_confirmed,
+                'progress_if_pending': progress_if_confirmed,
+                'contribution_count': confirmed_contributions,
+                'pending_contributions': pending_contributions,
                 'current_block': block_height,
                 'btc_price': btc_price,
                 'source': 'onchain'
@@ -84,13 +96,15 @@ async def fetch_onchain_data():
 def create_status_embed(data):
     """Create clean minimal status embed"""
     
-    # Calculate progress
+    # Calculate confirmed progress
     progress = data['progress'] * 100
     progress_bar_length = 20
     filled = int(progress_bar_length * data['progress'])
     bar = '█' * filled + '░' * (progress_bar_length - filled)
     
     btc_raised = data['btc_raised']
+    btc_pending = data.get('btc_pending', 0)
+    pending_contributions = data.get('pending_contributions', 0)
     
     # Clean simple embed
     embed = discord.Embed(
@@ -99,22 +113,35 @@ def create_status_embed(data):
         timestamp=datetime.utcnow()
     )
     
+    # Progress bar
     embed.add_field(
-        name="Progress",
+        name="Progress (Confirmed)",
         value=f"```{progress:.1f}% [{bar}]```",
         inline=False
     )
     
+    # BTC raised (confirmed)
     embed.add_field(
-        name="Raised",
+        name="Raised (Confirmed)",
         value=f"```{btc_raised:.2f} / {TARGET_BTC:.2f} BTC```",
         inline=False
     )
     
+    # Show pending if there are any
+    if btc_pending > 0 and pending_contributions > 0:
+        progress_if_pending = data.get('progress_if_pending', 0) * 100
+        total_with_pending = btc_raised + btc_pending
+        
+        embed.add_field(
+            name="⏳ Pending (Unconfirmed)",
+            value=f"```+{btc_pending:.2f} BTC ({pending_contributions} txs)\nWould be: {total_with_pending:.2f} BTC ({progress_if_pending:.1f}%)```",
+            inline=False
+        )
+    
     # Add data source footer
     footer_text = "On-chain data via mempool.space"
     if data.get('contribution_count'):
-        footer_text = f"{data['contribution_count']} contributions • {footer_text}"
+        footer_text = f"{data['contribution_count']} confirmed • {footer_text}"
     
     embed.set_footer(text=footer_text)
     
