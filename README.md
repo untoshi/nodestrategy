@@ -72,8 +72,8 @@ Want to run your own instance? Here's how:
 
 1. **Clone the repo**
    ```bash
-   git clone https://github.com/untoshi/nodestrategy.git
-   cd nodestrategy
+   git clone https://github.com/untoshi/nodestrategy-bot.git
+   cd nodestrategy-bot
    ```
 
 2. **Install dependencies**
@@ -132,7 +132,7 @@ MIT License - Feel free to fork and modify!
 ## 🔗 Links
 
 - **[NodeStrategy Website](https://nodestrategy.app)**
-- **[GitHub Repository](https://github.com/untoshi/nodestrategy)**
+- **[GitHub Repository](https://github.com/untoshi/nodestrategy-bot)**
 - **[Add Bot to Discord](https://discord.com/api/oauth2/authorize?client_id=1423181163383488553&permissions=277025770496&scope=bot)**
 
 ---
