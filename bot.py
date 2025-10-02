@@ -1,5 +1,5 @@
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 import aiohttp
 import os
 from datetime import datetime
@@ -14,12 +14,6 @@ bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 
 # Config
 API_BASE_URL = os.getenv('API_BASE_URL', 'https://node.auction/api')
-UPDATE_INTERVAL = int(os.getenv('UPDATE_INTERVAL', 60))
-
-# State tracking
-last_status = {}
-status_message = None
-status_channel = None
 
 # Color scheme: Orange & Black
 ORANGE = 0xFF6B00
@@ -92,71 +86,10 @@ async def fetch_status():
 @bot.event
 async def on_ready():
     print(f'[ONLINE] {bot.user.name} connected')
-    print(f'[INFO] Polling interval: {UPDATE_INTERVAL}s')
-    if not auction_tracker.is_running():
-        auction_tracker.start()
+    print(f'[INFO] Bot ready - use !s or !status for auction info')
 
 
-@tasks.loop(seconds=UPDATE_INTERVAL)
-async def auction_tracker():
-    """Main tracking loop"""
-    global last_status, status_message, status_channel
-    
-    try:
-        data = await fetch_status()
-        if not data:
-            print('[ERROR] Failed to fetch status')
-            return
-        
-        # Find the status channel (ONLY channels with 'status' or 'auction' in name)
-        if not status_channel:
-            for guild in bot.guilds:
-                for channel in guild.text_channels:
-                    if 'status' in channel.name.lower() or 'auction' in channel.name.lower():
-                        status_channel = channel
-                        print(f'[INFO] Found status channel: #{channel.name}')
-                        break
-                if status_channel:
-                    break
-        
-        # Don't post if no proper channel found
-        if not status_channel:
-            print('[INFO] No status/auction channel found. Create a channel with "status" or "auction" in the name.')
-            return
-        
-        # Check for alerts
-        if last_status:
-            # Price drop alert
-            if data['T_now'] != last_status.get('T_now'):
-                alert_embed = discord.Embed(
-                    title="Price Drop",
-                    description=f"New price: ${data.get('tokenUsdPrice', 0):.6f}",
-                    color=ORANGE
-                )
-                await status_channel.send(embed=alert_embed)
-            
-            # 5% increment milestone alerts
-            old_progress = last_status.get('progress_confirmed', 0) * 100
-            new_progress = data['progress_confirmed'] * 100
-            
-            # Check every 5% milestone
-            for milestone in range(5, 101, 5):
-                if old_progress < milestone <= new_progress:
-                    alert_embed = discord.Embed(
-                        title=f"{milestone}% Sold",
-                        description=f"{data['F_confirmed_BTC']} BTC raised",
-                        color=ORANGE
-                    )
-                    await status_channel.send(embed=alert_embed)
-        
-        last_status = data
-        print(f'[UPDATE] Progress: {data["progress_confirmed"]*100:.2f}% | Raised: {data["F_confirmed_BTC"]} BTC')
-        
-    except Exception as e:
-        print(f'[ERROR] {e}')
-
-
-@bot.command(name='status')
+@bot.command(name='status', aliases=['s'])
 async def auction_status(ctx):
     """Show current auction status"""
     data = await fetch_status()
